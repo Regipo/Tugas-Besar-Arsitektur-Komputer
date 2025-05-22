@@ -1,0 +1,521 @@
+// Definisi kredensial Blynk 2.0 - harus diletakkan SEBELUM include library
+#define BLYNK_TEMPLATE_ID "TMPL6bKKP8ZDK"
+#define BLYNK_TEMPLATE_NAME "SMART RETAIL RFID"
+#define BLYNK_AUTH_TOKEN "gZzA8RuolBnucW3sM8aIhtaaz1fWUVQB"
+
+// Jika ingin melihat debug info di Serial Monitor
+#define BLYNK_PRINT Serial
+
+// Include library yang dibutuhkan
+#include <SPI.h>
+#include <MFRC522.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+#include <time.h>
+#include <map>
+#include <vector>
+
+// Konfigurasi pin untuk RFID-RC522
+#define RST_PIN 22
+#define SS_PIN  21
+
+// Konfigurasi pin untuk Buzzer
+#define BUZZER_PIN 4
+
+// Konfigurasi WiFi
+const char* ssid = "Infinix GT 10 Pro";
+const char* password = "66666669";
+
+// Konfigurasi NTP Server untuk waktu
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 25200;  // GMT+7 (Indonesia) dalam detik (7*3600)
+const int   daylightOffset_sec = 0;
+
+// Objek RFID
+MFRC522 rfid(SS_PIN, RST_PIN);
+MFRC522::MIFARE_Key key;
+
+// Struktur untuk menyimpan informasi produk
+struct ProductInfo {
+  String name;
+  int quantity;
+  float price;
+  String category;
+};
+
+// Database produk (mapping RFID tag ke informasi produk)
+std::map<String, ProductInfo> productDatabase;
+
+// Variable untuk statistik
+int totalScans = 0;
+String lastCardID = "";
+unsigned long lastScanTime = 0;
+int uniqueProductsScanned = 0;
+std::vector<String> scannedProducts;
+
+// Variabel untuk mode inventarisasi
+bool inventoryMode = false;
+
+// Definisi nada untuk ringtone anime
+// Frequensi nada dalam Hz
+#define NOTE_B0  31
+#define NOTE_C1  33
+#define NOTE_CS1 35
+#define NOTE_D1  37
+#define NOTE_DS1 39
+#define NOTE_E1  41
+#define NOTE_F1  44
+#define NOTE_FS1 46
+#define NOTE_G1  49
+#define NOTE_GS1 52
+#define NOTE_A1  55
+#define NOTE_AS1 58
+#define NOTE_B1  62
+#define NOTE_C2  65
+#define NOTE_CS2 69
+#define NOTE_D2  73
+#define NOTE_DS2 78
+#define NOTE_E2  82
+#define NOTE_F2  87
+#define NOTE_FS2 93
+#define NOTE_G2  98
+#define NOTE_GS2 104
+#define NOTE_A2  110
+#define NOTE_AS2 117
+#define NOTE_B2  123
+#define NOTE_C3  131
+#define NOTE_CS3 139
+#define NOTE_D3  147
+#define NOTE_DS3 156
+#define NOTE_E3  165
+#define NOTE_F3  175
+#define NOTE_FS3 185
+#define NOTE_G3  196
+#define NOTE_GS3 208
+#define NOTE_A3  220
+#define NOTE_AS3 233
+#define NOTE_B3  247
+#define NOTE_C4  262
+#define NOTE_CS4 277
+#define NOTE_D4  294
+#define NOTE_DS4 311
+#define NOTE_E4  330
+#define NOTE_F4  349
+#define NOTE_FS4 370
+#define NOTE_G4  392
+#define NOTE_GS4 415
+#define NOTE_A4  440
+#define NOTE_AS4 466
+#define NOTE_B4  494
+#define NOTE_C5  523
+#define NOTE_CS5 554
+#define NOTE_D5  587
+#define NOTE_DS5 622
+#define NOTE_E5  659
+#define NOTE_F5  698
+#define NOTE_FS5 740
+#define NOTE_G5  784
+#define NOTE_GS5 831
+#define NOTE_A5  880
+#define NOTE_AS5 932
+#define NOTE_B5  988
+#define NOTE_C6  1047
+#define NOTE_CS6 1109
+#define NOTE_D6  1175
+#define NOTE_DS6 1245
+#define NOTE_E6  1319
+#define NOTE_F6  1397
+#define NOTE_FS6 1480
+#define NOTE_G6  1568
+#define NOTE_GS6 1661
+#define NOTE_A6  1760
+#define NOTE_AS6 1865
+#define NOTE_B6  1976
+
+// Tambahkan definisi untuk REST (jeda)
+#define REST 0
+
+// Deklarasi fungsi (untuk menghindari error kompilasi)
+void playTone(int frequency, int duration);
+void playNote(int frequency, int duration);
+void playAnimeErrorTune();
+void playAnimeStockEmptyTune();
+void playQuickStockAlert();
+void beep(int duration);
+
+// Variabel untuk tempo musik
+float tempoFactor = 1.0; // 1.0 adalah kecepatan normal
+
+// Fungsi untuk mengatur tempo
+void setTempo(float tempo) {
+  tempoFactor = tempo;
+}
+
+// Fungsi untuk mendapatkan waktu saat ini dalam format string
+String getTimeString() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    return "Gagal mendapatkan waktu";
+  }
+  char timeStringBuff[30];
+  strftime(timeStringBuff, sizeof(timeStringBuff), "%H:%M:%S", &timeinfo);
+  return String(timeStringBuff);
+}
+
+// Fungsi untuk mendapatkan tanggal saat ini dalam format string
+String getDateString() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    return "Gagal mendapatkan tanggal";
+  }
+  char dateStringBuff[30];
+  strftime(dateStringBuff, sizeof(dateStringBuff), "%d/%m/%Y", &timeinfo);
+  return String(dateStringBuff);
+}
+
+// Inisialisasi database produk
+void initProductDatabase() {
+  productDatabase["DEA9BA00"] = {"Sabun Mandi", 24, 12500, "Perawatan Tubuh"};
+  productDatabase["E68CFE00"] = {"Minyak Goreng", 1, 45000, "Bahan Makanan"};
+}
+
+// Handler untuk Blynk Button Mode Inventaris
+BLYNK_WRITE(V5) {
+  inventoryMode = param.asInt();
+  if (inventoryMode) {
+    Blynk.virtualWrite(V0, "MODE: INVENTARISASI AKTIF");
+  } else {
+    Blynk.virtualWrite(V0, "MODE: PEMINDAIAN NORMAL");
+  }
+}
+
+// Handler untuk Reset Statistik
+BLYNK_WRITE(V6) {
+  if (param.asInt()) {
+    totalScans = 0;
+    uniqueProductsScanned = 0;
+    scannedProducts.clear();
+    Blynk.virtualWrite(V2, totalScans);
+    Blynk.virtualWrite(V7, uniqueProductsScanned);
+    Blynk.virtualWrite(V0, "Statistik telah direset");
+  }
+}
+
+void setup() {
+  // Inisialisasi Serial
+  Serial.begin(115200);
+  
+  // Setup pin buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW); // Pastikan buzzer mati saat startup
+  
+  // Koneksi ke WiFi
+  Serial.print("Menghubungkan ke WiFi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.println("WiFi terhubung");
+  
+  // Konfigurasi waktu
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  
+  // Inisialisasi SPI dan RFID
+  SPI.begin();
+  rfid.PCD_Init();
+  
+  // Inisialisasi database produk
+  initProductDatabase();
+  
+  // Koneksi ke Blynk
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+  
+  // Tes buzzer saat startup
+  beep(100);
+  delay(100);
+  beep(100);
+  
+  // Kirim pesan awal ke terminal Blynk
+  Blynk.logEvent("system_start", "Smart Retail RFID System Started");
+  Blynk.virtualWrite(V0, "╔══════════════════════════════════╗");
+  Blynk.virtualWrite(V0, "║       SMART RETAIL RFID SYSTEM   ║");
+  Blynk.virtualWrite(V0, "╚══════════════════════════════════╝");
+  Blynk.virtualWrite(V0, "System siap untuk memindai produk...");
+  
+  Serial.println("Sistem siap, silakan scan kartu RFID...");
+  
+  // Persiapkan key (gunakan key default FF FF FF FF FF FF)
+  for (byte i = 0; i < 6; i++) {
+    key.keyByte[i] = 0xFF;
+  }
+}
+
+void loop() {
+  Blynk.run();
+  
+  // Cek apakah ada kartu baru
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial())
+    return;
+  
+  // Baca UID kartu RFID
+  String cardID = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    cardID += (rfid.uid.uidByte[i] < 0x10 ? "0" : "");
+    cardID += String(rfid.uid.uidByte[i], HEX);
+  }
+  cardID.toUpperCase();
+  
+  // Waktu scan
+  String timeStr = getTimeString();
+  String dateStr = getDateString();
+  String fullTimeStr = dateStr + " " + timeStr;
+  
+  // Cek apakah ini kartu baru atau yang sama (dengan jeda minimal untuk scan ulang)
+  if (cardID != lastCardID || (millis() - lastScanTime > 5000)) {
+    totalScans++;
+    lastCardID = cardID;
+    lastScanTime = millis();
+    
+    // Cek apakah produk ada dalam database
+    if (productDatabase.find(cardID) != productDatabase.end()) {
+      ProductInfo product = productDatabase[cardID];
+      
+      // Update statistik produk unik
+      bool isNewProduct = true;
+      for (const String& scannedID : scannedProducts) {
+        if (scannedID == cardID) {
+          isNewProduct = false;
+          break;
+        }
+      }
+      
+      if (isNewProduct) {
+        scannedProducts.push_back(cardID);
+        uniqueProductsScanned++;
+        Blynk.virtualWrite(V7, uniqueProductsScanned);
+      }
+      
+      // Visual dan audio feedback untuk produk terdeteksi
+      beep(200); // Bunyi feedback saat produk terdeteksi
+      
+      // Format tampilan terminal
+      Blynk.virtualWrite(V0, "╔══════════════════════════════════╗");
+      Blynk.virtualWrite(V0, "║          PRODUK TERDETEKSI       ║");
+      Blynk.virtualWrite(V0, "╚══════════════════════════════════╝");
+      Blynk.virtualWrite(V0, "ID RFID   : " + cardID);
+      Blynk.virtualWrite(V0, "Nama      : " + product.name);
+      Blynk.virtualWrite(V0, "Kategori  : " + product.category);
+      Blynk.virtualWrite(V0, "Harga     : Rp " + String(product.price, 0));
+      Blynk.virtualWrite(V0, "Stok      : " + String(product.quantity) + " unit");
+      Blynk.virtualWrite(V0, "Waktu     : " + fullTimeStr);
+      
+      // Kirim data ke Blynk widgets
+      Blynk.virtualWrite(V1, cardID);                       // ID kartu
+      Blynk.virtualWrite(V2, totalScans);                   // Total pemindaian
+      Blynk.virtualWrite(V3, product.name);                 // Nama produk
+      Blynk.virtualWrite(V4, String(product.quantity));     // Jumlah stok
+      Blynk.virtualWrite(V8, product.category);             // Kategori produk
+      Blynk.virtualWrite(V9, String(product.price, 0));     // Harga produk
+      
+      // Mode inventarisasi: mengurangi stok jika diaktifkan
+      if (inventoryMode) {
+        if (product.quantity > 0) {
+          product.quantity--;
+          productDatabase[cardID] = product; // Update database
+          Blynk.virtualWrite(V0, ">> Stok diperbarui: " + String(product.quantity) + " unit <<");
+          Blynk.virtualWrite(V4, String(product.quantity)); // Update widget stok
+        } else {
+          Blynk.virtualWrite(V0, ">> PERINGATAN: STOK HABIS! <<");
+          Blynk.logEvent("stock_alert", "Stok " + product.name + " habis!");
+          // Alarm untuk stok habis - menggunakan melodi lengkap
+          playAnimeStockEmptyTune(); // Menggunakan versi lengkap karena fungsi versi pendek tidak ada
+        }
+      }
+      
+      // Kirim event notifikasi
+      Blynk.logEvent("product_scanned", "Produk: " + product.name);
+      
+      Serial.println("Produk terdeteksi: " + product.name + " (ID: " + cardID + ")");
+      Serial.println("Stok: " + String(product.quantity) + " unit");
+    } else {
+      // Produk tidak terdaftar dalam database
+      playAnimeErrorTune(); // Bunyi error anime untuk kartu tidak dikenal
+      
+      Blynk.virtualWrite(V0, "╔══════════════════════════════════╗");
+      Blynk.virtualWrite(V0, "║        RFID TIDAK DIKENAL        ║");
+      Blynk.virtualWrite(V0, "╚══════════════════════════════════╝");
+      Blynk.virtualWrite(V0, "ID RFID   : " + cardID);
+      Blynk.virtualWrite(V0, "Waktu     : " + fullTimeStr);
+      Blynk.virtualWrite(V0, "Produk ini tidak terdaftar dalam database.");
+      
+      Blynk.virtualWrite(V1, cardID);        // ID kartu
+      Blynk.virtualWrite(V2, totalScans);    // Total pemindaian
+      Blynk.virtualWrite(V3, "Tidak dikenal");
+      Blynk.virtualWrite(V4, "0");
+      
+      Serial.println("RFID tidak dikenal: " + cardID);
+    }
+  }
+  
+ // Beri jeda sebelum scan berikutnya
+  delay(500);
+  
+  // Stop PICC dan reset MFRC522
+  rfid.PICC_HaltA();
+  rfid.PCD_StopCrypto1();
+}
+
+// Fungsi untuk menghasilkan beep sederhana
+void beep(int duration) {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(duration);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+// Fungsi yang diperbaiki untuk menghasilkan nada dengan buzzer pasif
+void playTone(int frequency, int duration) {
+  // Hitung periode dalam mikrodetik
+  long period = 1000000L / frequency;
+  long halfPeriod = period / 2;
+  
+  // Hitung jumlah siklus untuk dimainkan
+  long cycles = (long)((duration * 1000L) / period);
+  
+  // Generate gelombang kotak
+  for (long i = 0; i < cycles; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delayMicroseconds(halfPeriod);
+    digitalWrite(BUZZER_PIN, LOW);
+    delayMicroseconds(halfPeriod);
+  }
+}
+
+// Fungsi yang diperbaiki untuk memainkan nada dengan timing yang lebih baik
+void playNote(int frequency, int duration) {
+  // Sesuaikan durasi berdasarkan tempo
+  int adjustedDuration = (int)(duration / tempoFactor);
+  
+  // Hindari frekuensi 0 yang bisa menyebabkan masalah
+  if (frequency > 0) {
+    playTone(frequency, adjustedDuration);
+  } else {
+    // Jika REST (jeda), hanya delay tanpa bunyi
+    delay(adjustedDuration);
+  }
+  
+  // Tambah jeda kecil antar nada untuk kejelasan yang lebih baik
+  delay(adjustedDuration * 0.1); 
+}
+
+// Melodi Nokia tune yang diperbaiki (untuk error)
+void playAnimeErrorTune() {
+  // Nokia tune dengan timing dan nada yang lebih akurat
+  int melody[] = {
+    NOTE_E5, NOTE_D5, NOTE_FS4, NOTE_GS4, 
+    NOTE_CS5, NOTE_B4, NOTE_D4, NOTE_E4, 
+    NOTE_B4, NOTE_A4, NOTE_CS4, NOTE_E4, 
+    NOTE_A4
+  };
+  
+  int noteDurations[] = {
+    125, 125, 250, 250,
+    125, 125, 250, 250,
+    125, 125, 250, 250,
+    500
+  };
+  
+  // Mainkan melodi satu kali
+  for (int i = 0; i < 13; i++) {
+    playNote(melody[i], noteDurations[i]);
+  }
+}
+
+// Implementasi fungsi versi pendek untuk alert stok
+void playQuickStockAlert() {
+  // Versi pendek dari melodi anime untuk alert stok habis
+  int melody[] = {
+    NOTE_A5, NOTE_E5, NOTE_A4,
+    NOTE_B4, NOTE_E5, NOTE_B4,
+    NOTE_FS5, NOTE_E5, NOTE_D5,
+    NOTE_A4
+  };
+  
+  int durations[] = {
+    250, 250, 250,
+    250, 250, 250,
+    375, 375, 750,
+    1000
+  };
+  
+  // Mainkan melodi dengan tempo lebih cepat
+  setTempo(1.4); // Lebih cepat untuk alert ringkas
+  
+  for (int i = 0; i < 10; i++) {
+    playNote(melody[i], durations[i]);
+  }
+  
+  // Reset tempo ke normal
+  setTempo(1.0);
+}
+
+// Fungsi lagu stok habis dengan melodi custom lengkap
+void playAnimeStockEmptyTune() {
+  // Array melodi berdasarkan input custom
+  int melody[] = {
+    NOTE_D5, NOTE_E5, NOTE_FS5, NOTE_D5,
+    NOTE_E5, NOTE_E5, NOTE_E5, NOTE_FS5, NOTE_E5, NOTE_A4,
+    REST, NOTE_B4, NOTE_CS5, NOTE_D5, NOTE_B4,
+    REST, NOTE_E5, NOTE_FS5, NOTE_E5, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+    NOTE_FS5, NOTE_FS5, NOTE_E5, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+    
+    NOTE_E5, NOTE_E5, NOTE_D5, NOTE_CS5, NOTE_B4, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+    NOTE_D5, NOTE_E5, NOTE_CS5, NOTE_B4, NOTE_A4, NOTE_A4, NOTE_A4,
+    NOTE_E5, NOTE_D5, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+    NOTE_FS5, NOTE_FS5, NOTE_E5, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+    NOTE_A5, NOTE_CS5, NOTE_D5, NOTE_CS5, NOTE_B4, NOTE_A4, NOTE_B4, NOTE_D5, NOTE_B4,
+  };
+  
+  // Array durasi berdasarkan input custom
+  int durations[] = {
+    500, 250, 250, 250, // NOTE_D5,2, NOTE_E5,8, NOTE_FS5,8, NOTE_D5,8
+    250, 250, 250, 250, 1000, 1000, // NOTE_E5,8, NOTE_E5,8, NOTE_E5,8, NOTE_FS5,8, NOTE_E5,4, NOTE_A4,4
+    500, 250, 250, 250, 250, // REST,2, NOTE_B4,8, NOTE_CS5,8, NOTE_D5,8, NOTE_B4,8
+    250, 250, 250, 750, 125, 125, 125, 125, // REST,8, NOTE_E5,8, NOTE_FS5,8, NOTE_E5,-4, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+    375, 375, 750, 125, 125, 125, 125, // NOTE_FS5,-8, NOTE_FS5,-8, NOTE_E5,-4, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+    
+    375, 375, 375, 125, 375, 125, 125, 125, 125, // NOTE_E5,-8, NOTE_E5,-8, NOTE_D5,-8, NOTE_CS5,16, NOTE_B4,-8, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+    1000, 250, 375, 125, 250, 250, 250, // NOTE_D5,4, NOTE_E5,8, NOTE_CS5,-8, NOTE_B4,16, NOTE_A4,8, NOTE_A4,8, NOTE_A4,8
+    1000, 500, 125, 125, 125, 125, // NOTE_E5,4, NOTE_D5,2, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+    375, 375, 750, 125, 125, 125, 125, // NOTE_FS5,-8, NOTE_FS5,-8, NOTE_E5,-4, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+    1000, 250, 375, 125, 250, 125, 125, 125, 125, // NOTE_A5,4, NOTE_CS5,8, NOTE_D5,-8, NOTE_CS5,16, NOTE_B4,8, NOTE_A4,16, NOTE_B4,16, NOTE_D5,16, NOTE_B4,16
+  };
+  
+  // Hitung jumlah note dalam melodi
+  int melodyLength = sizeof(melody) / sizeof(melody[0]);
+  int durationLength = sizeof(durations) / sizeof(durations[0]);
+  int actualLength = (melodyLength < durationLength) ? melodyLength : durationLength;
+  
+  // Mainkan melodi dengan tempo yang disesuaikan
+  setTempo(1.2); // Sedikit lebih cepat untuk alert
+  
+  for (int i = 0; i < actualLength; i++) {
+    if (melody[i] == REST) {
+      // Jika REST (jeda), hanya delay tanpa bunyi
+      delay(durations[i] / tempoFactor);
+    } else {
+      // Mainkan note dengan durasi yang ditentukan
+      playNote(melody[i], durations[i]);
+    }
+    
+    // Tambah jeda kecil antara note untuk kejelasan
+    delay(50);
+  }
+  
+  // Reset tempo ke normal
+  setTempo(1.0);
+}
