@@ -3,6 +3,8 @@
 #define BLYNK_TEMPLATE_NAME "SMART RETAIL RFID"
 #define BLYNK_AUTH_TOKEN "gZzA8RuolBnucW3sM8aIhtaaz1fWUVQB"
 
+
+
 // Jika ingin melihat debug info di Serial Monitor
 #define BLYNK_PRINT Serial
 
@@ -24,8 +26,8 @@
 #define BUZZER_PIN 4
 
 // Konfigurasi WiFi
-const char* ssid = "Infinix GT 10 Pro";
-const char* password = "66666669";
+const char* ssid = "Regipo";
+const char* password = "Regipojago";
 
 // Konfigurasi NTP Server untuk waktu
 const char* ntpServer = "pool.ntp.org";
@@ -176,8 +178,8 @@ String getDateString() {
 
 // Inisialisasi database produk
 void initProductDatabase() {
-  productDatabase["DEA9BA00"] = {"Sabun Mandi", 24, 12500, "Perawatan Tubuh"};
-  productDatabase["E68CFE00"] = {"Minyak Goreng", 1, 45000, "Bahan Makanan"};
+  productDatabase["DEA9BA02"] = {"Obat", 10, 50000, "Kimia Farma"};
+  productDatabase["E68CFE01"] = {"Minyak Goreng", 1, 45000, "Bahan Makanan"};
 }
 
 // Handler untuk Blynk Button Mode Inventaris
